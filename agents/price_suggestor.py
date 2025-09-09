@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from typing import Dict, Any, List
 import pandas as pd
 import numpy as np
-from agents.llm_utils import generate_reasoning
-
+from agents.llm_utils import generate_price_reasoning
+from agents.llm_utils import search_online_prices
+import re
 
 # ----------------------- Utility mappings -----------------------
 
@@ -50,6 +51,23 @@ def _decay_for_category(cat: str) -> float:
 
 def _brand_mult(brand: str) -> float:
     return BRAND_MULTIPLIER.get(brand, 1.00)
+
+def _parse_price_text(price_text: str) -> Optional[float]:
+    """Parse a price string like '₹32,000' or '₹30,500 – ₹33,000' and return a numeric central value.
+    Returns None if no number can be found.
+    """
+    if not price_text or not isinstance(price_text, str):
+        return None
+    # remove currency symbols and normalize dashes
+    txt = price_text.replace('₹', '').replace('Rs.', '').replace(',', '')
+    txt = txt.replace('\u2013', '-').replace('\u2014', '-')
+    # find all numbers
+    nums = re.findall(r"\d+(?:\.\d+)?", txt)
+    if not nums:
+        return None
+    values = [float(n) for n in nums]
+    # if there is a range, take the mean
+    return float(sum(values) / len(values))
 
 # ----------------------- PriceSuggestor -----------------------
 
@@ -155,33 +173,74 @@ class PriceSuggestor:
         baseline_center = self._baseline_formula(item)
 
         # Combine
-        if comp_center is None:
-            center = baseline_center
-            used = "baseline_only"
-            spread = max(0.10 * center, 1500.0)
-        else:
+        query = f"{item.get('brand','')} {item.get('title','')} used price {item.get('age_months','')} months"
+        web_results = []
+        try:
+            web_results = search_online_prices(query)
+            # print("Web results:", web_results)
+        except Exception:
+            web_results = []
+
+
+        web_prices = []
+        for r in web_results:
+            ptxt = r.get("price")
+            pnum = _parse_price_text(ptxt)
+            if pnum is not None:
+                 web_prices.append(pnum)
+
+
+        web_center = None
+        web_spread = None
+        if web_prices:
+            web_center = float(np.mean(web_prices))
+            web_spread = float(max(0.08 * web_center, 0.5 * np.std(web_prices)))
+
+
+        # -------------------- Ensemble blending --------------------
+        # If we have comps and web results: use a 45% comps, 30% web, 25% baseline blend.
+        # If only web: 60% web, 40% baseline.
+        # If only comps: original 55% comps, 45% baseline.
+        if comp_center is not None and web_center is not None:
+            center = 0.45 * comp_center + 0.30 * web_center + 0.25 * baseline_center
+            method = "ensemble(comps+web+baseline)"
+        elif web_center is not None and comp_center is None:
+            center = 0.60 * web_center + 0.40 * baseline_center
+            method = "ensemble(web+baseline)"
+        elif comp_center is not None:
             center = 0.55 * comp_center + 0.45 * baseline_center
-            used = "ensemble(comps+baseline)"
-            spread = max(0.12 * center, comp_spread or 0.0, 1200.0)
+            method = "ensemble(comps+baseline)"
+        else:
+            center = baseline_center
+            method = "baseline_only"
+
+
+        # Spread: consider comp_spread and web_spread where available
+        spread_candidates = [0.12 * center, 1200.0]
+        if comp_spread is not None:
+            spread_candidates.append(comp_spread)
+        if web_spread is not None:
+            spread_candidates.append(web_spread)
+        spread = max(spread_candidates)
+
 
         suggested_min = max(0.0, round(center - spread, -2))
         suggested_max = round(center + spread, -2)
 
-        reasoning = generate_reasoning(
+
+        # Final natural-language reasoning via LLM helper (or offline stub)
+        reasoning = generate_price_reasoning(
             item=item,
             comps=comp_used_records,
             baseline=baseline_center,
             final_price=center,
             min_price=suggested_min,
-            max_price=suggested_max
+            max_price=suggested_max,
+            web_results=web_results,
         )
 
 
         return {
-            "suggested_min": suggested_min,
-            "suggested_max": suggested_max,
-            "central_price": round(center, 2),
-            "method": used,
-            "reasoning": reasoning,
-            "comps_used": comp_used_records,
+        "fair_price_range": f"{int(suggested_min)} - {int(suggested_max)}",
+        "reasoning": reasoning,
         }
