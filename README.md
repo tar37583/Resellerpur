@@ -1,140 +1,148 @@
+# Resellpur AI Agents
 
-# Resellpur Marketplace Agents
+This project implements **AI-powered agents** for a resale marketplace (Resellpur).  
+It includes two main agents and one utility function:
 
-Two small agents for the internship assessment: a **Price Suggestor** and a **Chat Moderation** microservice, exposed via FastAPI.
+1. **Price Suggestor** – suggests a fair price range for items using:
+   - Dataset comparables (nearest neighbors),
+   - Baseline depreciation formula,
+   - Live **online search results** (`search_online_prices` via LLM),
+   - LLM-generated reasoning.
 
-> Built to match the problem statement (agents, dataset, JSON I/O, optional API) and to be practical & easy to extend.
+2. **Chat Moderator** – uses an LLM to classify messages as:
+   - `safe`, `abusive`, `spam`, or `contains_phone`,
+   - Returns structured JSON with `status` and `reason`.
 
+3. **`search_online_prices` helper** – defined in `llm_utils.py`,  
+   queries OLX, Cashify, Quikr, etc. (via Grok/LLM) to fetch resale prices  
+   and is used by the Price Suggestor.
 
-## Features
+---
 
-- **Agent 1 – Price Suggestor**: Given product details, suggests a fair market **price range** with **reasoning** and **comparables**.
-- **Agent 2 – Chat Moderation**: Classifies a message as `safe`, `abusive`, `spam`, or `contains_phone` with highlighted spans.
-- **FastAPI** endpoints: `/negotiate` and `/moderate`.
-- Lightweight, no external model dependency by default; designed so you can plug in an LLM later if you want.
+## 🚀 Features
+- FastAPI backend with interactive Swagger UI (`/docs`).
+- Modular `agents/` folder with:
+  - `price_suggestor.py`
+  - `chat_moderation.py`
+  - `llm_utils.py` (centralized LLM + web helpers)
+- JSON outputs for assignment compliance:
+  - **Price Suggestor:** `{ "fair_price_range": "...", "reasoning": "..." }`
+  - **Chat Moderator:** `{ "status": "...", "reason": "..." }`
+- `.env` support for API keys (secure, not in repo).
 
-## Setup
+---
 
+## 🛠️ Setup
+
+### 1. Clone repo
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+git clone https://github.com/your-username/resellpur-agents.git
+cd resellpur-agents
+```
+
+### 2. Create virtual environment
+```bash
+python -m venv ass
+ass\Scripts\activate    # Windows
+# or
+source ass/bin/activate # Linux / Mac
+```
+
+### 3. Install dependencies
+```bash
 pip install -r requirements.txt
 ```
 
-## Run the API
+### 4. Configure environment
+Create a `.env` file in the project root:
+
+```
+GROK_API_KEY=your_api_key_here
+```
+
+---
+
+## ▶️ Running the Server
+
+Start the FastAPI server:
 
 ```bash
 uvicorn app:app --reload
 ```
 
-It will start at: `http://127.0.0.1:8000`
+- Swagger UI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)  
+- Health check: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
 
-- Docs: `http://127.0.0.1:8000/docs`
-- Health: `GET /health`
+---
 
-## Endpoints
+## 📡 API Endpoints
 
-### POST /negotiate
+### 1. Price Suggestion
+`POST /negotiate`
 
-**Body**
-
+Request:
 ```json
 {
+  "title": "iPhone 12",
   "category": "Mobile",
   "brand": "Apple",
   "condition": "Good",
   "age_months": 24,
-  "asking_price": 34000,
-  "location": "Mumbai",
-  "title": "iPhone 12"
+  "asking_price": 35000,
+  "location": "Mumbai"
 }
 ```
 
-**Response (example)**
-
+Response:
 ```json
 {
-  "input": { ... },
-  "suggestion": {
-    "suggested_min": 30000,
-    "suggested_max": 36000,
-    "central_price": 32900.0,
-    "method": "ensemble(comps+baseline)",
-    "reasoning": "Category='Mobile' ...",
-    "comps_used": [{ "id": 1, "title": "iPhone 12", ... }]
-  }
+  "fair_price_range": "22800 – 33700",
+  "reasoning": "Your iPhone 12 (Apple, Good, 24 months old) was valued using dataset comparables, depreciation baseline, and online market prices. Web comparables: olx.in: ₹32,000, cashify.in: ₹30,500 – ₹33,000. The blended central price is ~₹28,200, so a reasonable range is ₹22,800 – ₹33,700."
 }
 ```
 
-### POST /moderate
+---
 
-**Body**
+### 2. Chat Moderation
+`POST /moderate`
 
-```json
-{ "message": "This is stupid. Call me at +91 9876543210" }
-```
-
-**Response (example)**
-
+Request:
 ```json
 {
-  "input": "This is stupid. Call me at +91 9876543210",
-  "result": {
-    "label": "abusive",
-    "reasons": ["contains a phone number", "contains abusive language"],
-    "spans": [
-      {"type":"phone","match":"+91 9876543210"},
-      {"type":"abusive","match":"stupid"}
-    ]
-  }
+  "message": "This is stupid. Call me at +91 9876543210"
 }
 ```
 
-## How price suggestion works
-
-1. **Nearest Comparables (k=5)** within the same category using a simple distance over age, condition, brand, and location.
-2. **Baseline Formula** using exponential depreciation (category-wise rate), condition multiplier, and brand retention factor.
-3. **Ensemble**: Weighted blend of comparables and baseline; range is centered around the ensemble price with spread from comp volatility.
-4. **Transparent JSON**: Includes reasoning and the comps it used.
-
-This is robust on small datasets and behaves sensibly when comps are scarce.
-
-## Data
-
-The file `data/listings.csv` reproduces the sample dataset from the assessment handout.
-
-## Extend / Bonus ideas
-
-- Wire a live comps fetcher (OLX/Cashify scraping or API) and blend with the local dataset.
-- Plug an LLM (Groq / HF Inference) to:
-  - Generate richer reasoning.
-  - Explain negotiation tactics or counter-offers.
-- Add **fraud detection** (e.g., mismatched specs vs title, suspicious pricing).
-- Add **multi-agent negotiation** (buyer offers, seller counters).
-
-## Tests (quick)
-
-Run a quick sanity test without the server:
-
-```bash
-python - <<'PY'
-from agents.price_suggestor import PriceSuggestor
-from agents.chat_moderation import ChatModerator
-
-ps = PriceSuggestor.from_csv("data/listings.csv")
-item = {
-    "category": "Mobile", "brand":"Apple", "condition":"Good",
-    "age_months":24, "asking_price":35000, "location":"Mumbai", "title":"iPhone 12"
+Response:
+```json
+{
+  "status": "abusive",
+  "reason": "The message contains abusive language ('stupid') and shares a phone number."
 }
-print(ps.suggest(item))
-
-cm = ChatModerator()
-print(cm.moderate("This is stupid. Call me at +91 98765 43210. Visit http://spam.me now!!!"))
-PY
 ```
 
-## Notes
+---
 
-- Python 3.10+ recommended.
-- No private keys required to run the default agents.
-- Code is typed and documented for readability.
+## 🧩 Project Structure
+```
+resellpur-agents/
+├── agents/
+│ ├── price_suggestor.py
+│ ├── chat_moderation.py
+│ ├── llm_utils.py # contains search_online_prices() and LLM helpers
+├── data/
+│ └── resellpur_data.csv # dataset for comparables
+├── quick_test/
+│ └── test_requests.py # scripts/notebooks for quick API testing
+├── app.py # FastAPI entrypoint
+├── requirements.txt
+├── .env.example
+├── .gitignore
+└── README.md
+```
+
+
+---
+
+## 👨‍💻 Author
+*Developed by Tarang* — for the **AI Intern Project Assessment (Resellpur)**.
